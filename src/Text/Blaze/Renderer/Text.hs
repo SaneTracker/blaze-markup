@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, Rank2Types #-}
 -- | A renderer that produces a lazy 'L.Text' value, using the Text Builder.
 --
 module Text.Blaze.Renderer.Text
@@ -12,6 +12,7 @@ module Text.Blaze.Renderer.Text
     , renderHtmlWith
     ) where
 
+import Data.Functor.Identity
 import Data.Monoid (mappend, mempty)
 import Data.List (isInfixOf)
 
@@ -78,12 +79,12 @@ renderHtmlBuilder = renderMarkupBuilder
 
 -- | Render some 'Markup' to a Text 'Builder'.
 --
-renderMarkupBuilderWith :: (ByteString -> Text)  -- ^ Decoder for bytestrings
-                        -> Markup                -- ^ Markup to render
-                        -> Builder               -- ^ Resulting builder
+renderMarkupBuilderWith :: (ByteString -> Text) -- ^ Decoder for bytestrings
+                        -> Markup               -- ^ Markup to render
+                        -> Builder            -- ^ Resulting builder
 renderMarkupBuilderWith d = go mempty
   where
-    go :: Builder -> MarkupM b -> Builder
+    go :: Builder -> Markup -> Builder
     go attrs (Parent _ open close content) =
         B.fromText (getText open)
             `mappend` attrs
@@ -138,11 +139,11 @@ renderHtmlBuilderWith = renderMarkupBuilderWith
 -- input markup, this function will consider them as UTF-8 encoded values and
 -- decode them that way.
 --
-renderMarkup :: Markup -> L.Text
+renderMarkup :: Monad m => MarkupM m a -> m L.Text
 renderMarkup = renderMarkupWith decodeUtf8
 {-# INLINE renderMarkup #-}
 
-renderHtml :: Markup -> L.Text
+renderHtml :: Monad m => MarkupM m a -> m L.Text
 renderHtml = renderMarkup
 {-# INLINE renderHtml #-}
 {-# DEPRECATED renderHtml
@@ -152,14 +153,16 @@ renderHtml = renderMarkup
 -- should happen with ByteString's in the input HTML. You can decode them or
 -- drop them, this depends on the application...
 --
-renderMarkupWith :: (ByteString -> Text)  -- ^ Decoder for ByteString's.
-                 -> Markup                -- ^ Markup to render
-                 -> L.Text                -- Resulting lazy text
-renderMarkupWith d = B.toLazyText . renderMarkupBuilderWith d
+renderMarkupWith :: Monad m => (ByteString -> Text)  -- ^ Decoder for ByteString's.
+                 -> MarkupM m a                      -- ^ Markup to render
+                 -> m L.Text                         -- Resulting lazy text
+renderMarkupWith d (MarkupM m) = do
+    (_, mr) <- m
+    return $ B.toLazyText $ renderMarkupBuilderWith d mr
 
-renderHtmlWith :: (ByteString -> Text)  -- ^ Decoder for ByteString's.
-               -> Markup                -- ^ Markup to render
-               -> L.Text                -- ^ Resulting lazy text
+renderHtmlWith :: Monad m => (ByteString -> Text)  -- ^ Decoder for ByteString's.
+               -> MarkupM m a                      -- ^ Markup to render
+               -> m L.Text                         -- ^ Resulting lazy text
 renderHtmlWith = renderMarkupWith
 {-# DEPRECATED renderHtmlWith
     "Use renderHtmlWith from Text.Blaze.Html.Renderer.Text instead" #-}

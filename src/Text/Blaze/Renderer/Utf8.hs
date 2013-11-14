@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, Rank2Types #-}
 module Text.Blaze.Renderer.Utf8
     ( renderMarkupBuilder
     , renderMarkup
@@ -49,7 +49,7 @@ renderMarkupBuilder, renderHtmlBuilder :: Markup     -- ^ Markup to render
                   -> Builder  -- ^ Resulting builder
 renderMarkupBuilder = go mempty
   where
-    go :: Builder -> MarkupM b -> Builder
+    go :: Builder -> Markup -> Builder
     go attrs (Parent _ open close content) =
         B.copyByteString (getUtf8ByteString open)
             `mappend` attrs
@@ -99,9 +99,11 @@ renderHtmlBuilder = renderMarkupBuilder
 
 -- | Render HTML to a lazy UTF-8 encoded 'L.ByteString.'
 --
-renderMarkup, renderHtml :: Markup          -- ^ Markup to render
-                         -> L.ByteString  -- ^ Resulting 'L.ByteString'
-renderMarkup = B.toLazyByteString . renderMarkupBuilder
+renderMarkup, renderHtml :: Monad m => MarkupM m a  -- ^ Markup to render
+                         -> m L.ByteString          -- ^ Resulting 'L.ByteString'
+renderMarkup (MarkupM m) = do
+    (_, mr) <- m
+    return $ B.toLazyByteString $ renderMarkupBuilder mr
 {-# INLINE renderMarkup #-}
 
 renderHtml = renderMarkup
@@ -115,9 +117,11 @@ renderHtml = renderMarkup
 --
 renderMarkupToByteStringIO, renderHtmlToByteStringIO :: (S.ByteString -> IO ())
                                                         -- ^ IO action to execute per rendered buffer
-                                                     -> Markup          -- ^ Markup to render
-                                                     -> IO ()         -- ^ Resulting IO action
-renderMarkupToByteStringIO io = B.toByteStringIO io . renderMarkupBuilder
+                                                     -> MarkupM IO a   -- ^ Markup to render
+                                                     -> IO ()          -- ^ Resulting IO action
+renderMarkupToByteStringIO io (MarkupM m) = do
+    (_, mr) <- m
+    B.toByteStringIO io $ renderMarkupBuilder mr
 {-# INLINE renderMarkupToByteStringIO #-}
 
 renderHtmlToByteStringIO = renderMarkupToByteStringIO

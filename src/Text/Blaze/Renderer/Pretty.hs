@@ -1,5 +1,6 @@
 -- | A renderer that produces pretty HTML, mostly meant for debugging purposes.
 --
+{-# LANGUAGE Rank2Types #-}
 module Text.Blaze.Renderer.Pretty
     ( renderMarkup
     , renderHtml
@@ -10,12 +11,12 @@ import Text.Blaze.Renderer.String (fromChoiceString)
 
 -- | Render some 'Markup' to an appending 'String'.
 --
-renderString :: Markup  -- ^ Markup to render
+renderString :: Markup -- ^ Markup to render
              -> String  -- ^ String to append
              -> String  -- ^ Resulting String
 renderString = go 0 id
   where
-    go :: Int -> (String -> String) -> MarkupM b -> String -> String
+    go :: Int -> (String -> String) -> Markup -> String -> String
     go i attrs (Parent _ open close content) =
         ind i . getString open . attrs . (">\n" ++) . go (inc i) id content
               . ind i . getString close .  ('\n' :)
@@ -47,11 +48,13 @@ renderString = go 0 id
 
 -- | Render markup to a lazy 'String'. The result is prettified.
 --
-renderMarkup :: Markup -> String
-renderMarkup html = renderString html ""
+renderMarkup :: Monad m => MarkupM m a -> m String
+renderMarkup (MarkupM m) = do
+    (_, mr) <- m
+    return $ renderString mr ""
 {-# INLINE renderMarkup #-}
 
-renderHtml :: Markup -> String
+renderHtml :: Monad m => MarkupM m a -> m String
 renderHtml = renderMarkup
 {-# INLINE renderHtml #-}
 {-# DEPRECATED renderHtml

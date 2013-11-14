@@ -1,12 +1,14 @@
 -- | A renderer that produces a native Haskell 'String', mostly meant for
 -- debugging purposes.
 --
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, Rank2Types #-}
 module Text.Blaze.Renderer.String
     ( fromChoiceString
     , renderMarkup
     , renderHtml
     ) where
+
+import Data.Functor.Identity
 
 import Data.List (isInfixOf)
 
@@ -56,12 +58,12 @@ fromChoiceString EmptyChoiceString = id
 
 -- | Render some 'Markup' to an appending 'String'.
 --
-renderString :: Markup    -- ^ Markup to render
+renderString :: Markup  -- ^ Markup to render
              -> String  -- ^ String to append
              -> String  -- ^ Resulting String
 renderString = go id 
   where
-    go :: (String -> String) -> MarkupM b -> String -> String
+    go :: (String -> String) -> Markup -> String -> String
     go attrs (Parent _ open close content) =
         getString open . attrs . ('>' :) . go id content . getString close
     go attrs (CustomParent tag content) =
@@ -84,11 +86,13 @@ renderString = go id
 
 -- | Render markup to a lazy 'String'.
 --
-renderMarkup :: Markup -> String
-renderMarkup html = renderString html ""
+renderMarkup :: Monad m => MarkupM m a -> m String
+renderMarkup (MarkupM m) = do
+    (_, mr) <- m
+    return $ renderString mr ""
 {-# INLINE renderMarkup #-}
 
-renderHtml :: Markup -> String
+renderHtml :: Monad m => MarkupM m a -> m String
 renderHtml = renderMarkup
 {-# INLINE renderHtml #-}
 {-# DEPRECATED renderHtml

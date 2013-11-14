@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings, GeneralizedNewtypeDeriving, Rank2Types,
              FlexibleInstances, ExistentialQuantification,
-             DeriveDataTypeable #-}
+             DeriveDataTypeable, FlexibleContexts #-}
 -- | The BlazeMarkup core, consisting of functions that offer the power to
 -- generate custom markup elements. It also offers user-centric functions,
 -- which are exposed through 'Text.Blaze'.
@@ -14,6 +14,7 @@ module Text.Blaze.Internal
       ChoiceString (..)
     , StaticString (..)
     , MarkupM (..)
+    , Markup (..)
     , Markup
     , Tag
     , Attribute
@@ -59,10 +60,11 @@ module Text.Blaze.Internal
     , external
     ) where
 
+import Control.Monad
+import Control.Monad.Trans
 import Data.Monoid (Monoid, mappend, mempty, mconcat)
-import Unsafe.Coerce (unsafeCoerce)
-
 import Data.ByteString.Char8 (ByteString)
+import Data.Functor.Identity
 import Data.Text (Text)
 import Data.Typeable (Typeable)
 import GHC.Exts (IsString (..))
@@ -71,6 +73,10 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy as LT
+
+instance Monoid a => Monoid (Identity a) where
+    mempty = Identity mempty
+    mappend (Identity x) (Identity y) = Identity (mappend x y)
 
 -- | A static string that supports efficient output to all possible backends.
 --
@@ -119,11 +125,19 @@ instance IsString ChoiceString where
 
 -- | The core Markup datatype.
 --
-data MarkupM a
+newtype MarkupM m a = MarkupM { runMarkupM :: m (a, Markup) }
+
+instance MonadTrans MarkupM where
+    lift = MarkupM . liftM (\x -> (x, mempty))
+
+instance (MonadIO m) => MonadIO (MarkupM m) where
+    liftIO = MarkupM . liftM (\x -> (x, mempty)) . liftIO
+
+data Markup
     -- | Tag, open tag, end tag, content
-    = forall b. Parent StaticString StaticString StaticString (MarkupM b)
+    = Parent StaticString StaticString StaticString Markup
     -- | Custom parent
-    | forall b. CustomParent ChoiceString (MarkupM b)
+    | CustomParent ChoiceString Markup
     -- | Tag, open tag, end tag
     | Leaf StaticString StaticString StaticString
     -- | Custom leaf
@@ -131,43 +145,59 @@ data MarkupM a
     -- | HTML content
     | Content ChoiceString
     -- | Concatenation of two HTML pieces
-    | forall b c. Append (MarkupM b) (MarkupM c)
+    | Append Markup Markup
     -- | Add an attribute to the inner HTML. Raw key, key, value, HTML to
     -- receive the attribute.
-    | AddAttribute StaticString StaticString ChoiceString (MarkupM a)
+    | AddAttribute StaticString StaticString ChoiceString Markup
     -- | Add a custom attribute to the inner HTML.
-    | AddCustomAttribute ChoiceString ChoiceString (MarkupM a)
+    | AddCustomAttribute ChoiceString ChoiceString Markup
     -- | Empty HTML.
     | Empty
     deriving (Typeable)
 
 -- | Simplification of the 'MarkupM' datatype.
 --
-type Markup = MarkupM ()
+type PureMarkup = forall m. Monad m => MarkupM m ()
 
-instance Monoid a => Monoid (MarkupM a) where
+instance Monoid Markup where
     mempty = Empty
     {-# INLINE mempty #-}
-    mappend x y = Append x y
+    mappend = Append
     {-# INLINE mappend #-}
     mconcat = foldr Append Empty
     {-# INLINE mconcat #-}
 
-instance Functor MarkupM where
-    -- Safe because it does not contain a value anyway
-    fmap _ = unsafeCoerce
+instance (Monad m, Monoid a) => Monoid (MarkupM m a) where
+    mempty = MarkupM $ return (mempty, mempty)
+    {-# INLINE mempty #-}
+    mappend (MarkupM l) (MarkupM r) = MarkupM $ do
+        (x, ml) <- l
+        (y, mr) <- r
+        return (mappend x y, mappend ml mr)
+    {-# INLINE mappend #-}
+    mconcat = foldr mappend mempty
+    {-# INLINE mconcat #-}
 
-instance Monad MarkupM where
-    return _ = Empty
+instance (Functor f) => Functor (MarkupM f) where
+    fmap f (MarkupM m) = MarkupM $ fmap (\(x, r) -> (f x, r)) m
+
+instance (Monad m) => Monad (MarkupM m) where
+    return x = MarkupM $ return (x, Empty)
     {-# INLINE return #-}
-    (>>) = Append
+    (>>) (MarkupM l) (MarkupM r) = MarkupM $ do
+        (_, ml) <- l
+        (y, mr) <- r
+        return (y, mappend ml mr)
     {-# INLINE (>>) #-}
-    h1 >>= f = h1 >> f
-        (error "Text.Blaze.Internal.MarkupM: invalid use of monadic bind")
+    (MarkupM m) >>= f = MarkupM $ do
+        (x, ml) <- m
+        let (MarkupM m') = f x
+        (y, mr) <- m'
+        return (y, mappend ml mr)
     {-# INLINE (>>=) #-}
 
-instance IsString (MarkupM a) where
-    fromString = Content . fromString
+instance (Monad m, Monoid a) => IsString (MarkupM m a) where
+    fromString s = MarkupM $ return (mempty, Content $ fromString s)
     {-# INLINE fromString #-}
 
 -- | Type for an HTML tag. This can be seen as an internal string type used by
@@ -178,7 +208,7 @@ newtype Tag = Tag { unTag :: StaticString }
 
 -- | Type for an attribute.
 --
-newtype Attribute = Attribute (forall a. MarkupM a -> MarkupM a)
+newtype Attribute = Attribute (forall a m. Functor m => MarkupM m a -> MarkupM m a)
 
 instance Monoid Attribute where
     mempty                            = Attribute id
@@ -190,16 +220,16 @@ newtype AttributeValue = AttributeValue { unAttributeValue :: ChoiceString }
     deriving (IsString, Monoid)
 
 -- | Create a custom parent element
-customParent :: Tag     -- ^ Element tag
-             -> Markup  -- ^ Content
-             -> Markup  -- ^ Resulting markup
-customParent tag = CustomParent (Static $ unTag tag)
+customParent :: Functor m => Tag     -- ^ Element tag
+             -> MarkupM m () -- ^ Content
+             -> MarkupM m () -- ^ Resulting markup
+customParent tag = applyToContent $ CustomParent (Static $ unTag tag)
 
 -- | Create a custom leaf element
-customLeaf :: Tag     -- ^ Element tag
-           -> Bool    -- ^ Close the leaf?
-           -> Markup  -- ^ Resulting markup
-customLeaf tag = CustomLeaf (Static $ unTag tag)
+customLeaf :: Monad m => Tag -- ^ Element tag
+           -> Bool           -- ^ Close the leaf?
+           -> MarkupM m ()   -- ^ Resulting markup
+customLeaf tag close = MarkupM $ return (mempty, CustomLeaf (Static $ unTag tag) close)
 
 -- | Create an HTML attribute that can be applied to an HTML element later using
 -- the '!' operator.
@@ -208,7 +238,7 @@ attribute :: Tag             -- ^ Raw key
           -> Tag             -- ^ Shared key string for the HTML attribute.
           -> AttributeValue  -- ^ Value for the HTML attribute.
           -> Attribute       -- ^ Resulting HTML attribute.
-attribute rawKey key value = Attribute $
+attribute rawKey key value = Attribute $ applyToContent $
     AddAttribute (unTag rawKey) (unTag key) (unAttributeValue value)
 {-# INLINE attribute #-}
 
@@ -226,7 +256,7 @@ attribute rawKey key value = Attribute $
 dataAttribute :: Tag             -- ^ Name of the attribute.
               -> AttributeValue  -- ^ Value for the attribute.
               -> Attribute       -- ^ Resulting HTML attribute.
-dataAttribute tag value = Attribute $ AddCustomAttribute
+dataAttribute tag value = Attribute $ applyToContent $ AddCustomAttribute
     (Static "data-" `mappend` Static (unTag tag))
     (unAttributeValue value)
 {-# INLINE dataAttribute #-}
@@ -245,50 +275,50 @@ dataAttribute tag value = Attribute $ AddCustomAttribute
 customAttribute :: Tag             -- ^ Name of the attribute
                 -> AttributeValue  -- ^ Value for the attribute
                 -> Attribute       -- ^ Resulting HTML attribtue
-customAttribute tag value = Attribute $ AddCustomAttribute
+customAttribute tag value = Attribute $ applyToContent $ AddCustomAttribute
     (Static $ unTag tag)
     (unAttributeValue value)
 {-# INLINE customAttribute #-}
 
 -- | Render text. Functions like these can be used to supply content in HTML.
 --
-text :: Text    -- ^ Text to render.
-     -> Markup  -- ^ Resulting HTML fragment.
-text = Content . Text
+text :: Monad m => Text  -- ^ Text to render.
+     -> MarkupM m ()     -- ^ Resulting HTML fragment.
+text t = MarkupM $ return (mempty, Content $ Text t)
 {-# INLINE text #-}
 
 -- | Render text without escaping.
 --
-preEscapedText :: Text    -- ^ Text to insert
-               -> Markup  -- ^ Resulting HTML fragment
-preEscapedText = Content . PreEscaped . Text
+preEscapedText :: Monad m => Text  -- ^ Text to insert
+               -> MarkupM m ()     -- ^ Resulting HTML fragment
+preEscapedText t = MarkupM $ return (mempty, Content $ PreEscaped $ Text t)
 {-# INLINE preEscapedText #-}
 
 -- | A variant of 'text' for lazy 'LT.Text'.
 --
-lazyText :: LT.Text  -- ^ Text to insert
-         -> Markup   -- ^ Resulting HTML fragment
+lazyText :: Monad m => LT.Text  -- ^ Text to insert
+         -> MarkupM m ()        -- ^ Resulting HTML fragment
 lazyText = mconcat . map text . LT.toChunks
 {-# INLINE lazyText #-}
 
 -- | A variant of 'preEscapedText' for lazy 'LT.Text'
 --
-preEscapedLazyText :: LT.Text  -- ^ Text to insert
-                   -> Markup   -- ^ Resulting HTML fragment
+preEscapedLazyText :: Monad m => LT.Text  -- ^ Text to insert
+                   -> MarkupM m ()        -- ^ Resulting HTML fragment
 preEscapedLazyText = mconcat . map preEscapedText . LT.toChunks
 
 -- | Create an HTML snippet from a 'String'.
 --
-string :: String  -- ^ String to insert.
-       -> Markup  -- ^ Resulting HTML fragment.
-string = Content . String
+string :: Monad m => String  -- ^ String to insert.
+       -> MarkupM m ()       -- ^ Resulting HTML fragment.
+string s = MarkupM $ return (mempty, Content $ String s)
 {-# INLINE string #-}
 
 -- | Create an HTML snippet from a 'String' without escaping
 --
-preEscapedString :: String  -- ^ String to insert.
-                 -> Markup  -- ^ Resulting HTML fragment.
-preEscapedString = Content . PreEscaped . String
+preEscapedString :: Monad m => String  -- ^ String to insert.
+                 -> MarkupM m ()       -- ^ Resulting HTML fragment.
+preEscapedString s = MarkupM $ return (mempty, Content $ PreEscaped $ String s)
 {-# INLINE preEscapedString #-}
 
 -- | Insert a 'ByteString'. This is an unsafe operation:
@@ -298,16 +328,16 @@ preEscapedString = Content . PreEscaped . String
 -- * The 'ByteString' might contain illegal HTML characters (no escaping is
 --   done).
 --
-unsafeByteString :: ByteString  -- ^ Value to insert.
-                 -> Markup      -- ^ Resulting HTML fragment.
-unsafeByteString = Content . ByteString
+unsafeByteString :: Monad m => ByteString  -- ^ Value to insert.
+                 -> MarkupM m ()           -- ^ Resulting HTML fragment.
+unsafeByteString b = MarkupM $ return (mempty, Content $ ByteString b)
 {-# INLINE unsafeByteString #-}
 
 -- | Insert a lazy 'BL.ByteString'. See 'unsafeByteString' for reasons why this
 -- is an unsafe operation.
 --
-unsafeLazyByteString :: BL.ByteString  -- ^ Value to insert
-                     -> Markup         -- ^ Resulting HTML fragment
+unsafeLazyByteString :: Monad m => BL.ByteString  -- ^ Value to insert
+                     -> MarkupM m ()              -- ^ Resulting HTML fragment
 unsafeLazyByteString = mconcat . map unsafeByteString . BL.toChunks
 {-# INLINE unsafeLazyByteString #-}
 
@@ -404,13 +434,16 @@ class Attributable h where
     --
     (!) :: h -> Attribute -> h
 
-instance Attributable (MarkupM a) where
+instance Functor m => Attributable (MarkupM m a) where
     h ! (Attribute f) = f h
     {-# INLINE (!) #-}
 
-instance Attributable (MarkupM a -> MarkupM b) where
+instance Functor m => Attributable (MarkupM m a -> MarkupM m a) where
     h ! f = (! f) . h
     {-# INLINE (!) #-}
+
+applyToContent :: Functor m => (Markup -> Markup) -> MarkupM m a -> MarkupM m a
+applyToContent f (MarkupM m) = MarkupM $ fmap (\(x, mr) -> (x, f mr)) m
 
 -- | Mark HTML as external data. External data can be:
 --
@@ -421,15 +454,18 @@ instance Attributable (MarkupM a -> MarkupM b) where
 -- This function is applied automatically when using the @style@ or @script@
 -- combinators.
 --
-external :: MarkupM a -> MarkupM a
-external (Content x) = Content $ External x
-external (Append x y) = Append (external x) (external y)
-external (Parent x y z i) = Parent x y z $ external i
-external (CustomParent x i) = CustomParent x $ external i
-external (AddAttribute x y z i) = AddAttribute x y z $ external i
-external (AddCustomAttribute x y i) = AddCustomAttribute x y $ external i
-external x = x
-{-# INLINE external #-}
+external :: Functor m => MarkupM m a -> MarkupM m a
+external = applyToContent external'
+
+external' :: Markup -> Markup
+external' (Content x) = Content $ External x
+external' (Append x y) = Append (external' x) (external' y)
+external' (Parent x y z i) = Parent x y z $ external' i
+external' (CustomParent x i) = CustomParent x $ external' i
+external' (AddAttribute x y z i) = AddAttribute x y z $ external' i
+external' (AddCustomAttribute x y i) = AddCustomAttribute x y $ external' i
+external' x = x
+{-# INLINE external' #-}
 
 -- | Take only the text content of an HTML tree.
 --
@@ -441,11 +477,14 @@ external x = x
 --
 -- > Hello World!
 --
-contents :: MarkupM a -> MarkupM b
-contents (Parent _ _ _ c)           = contents c
-contents (CustomParent _ c)         = contents c
-contents (Content c)                = Content c
-contents (Append c1 c2)             = Append (contents c1) (contents c2)
-contents (AddAttribute _ _ _ c)     = contents c
-contents (AddCustomAttribute _ _ c) = contents c
-contents _                          = Empty
+contents :: Functor m => MarkupM m a -> MarkupM m a
+contents = applyToContent contents'
+
+contents' :: Markup -> Markup
+contents' (Parent _ _ _ c)           = contents' c
+contents' (CustomParent _ c)         = contents' c
+contents' (Content c)                = Content c
+contents' (Append c1 c2)             = Append (contents' c1) (contents' c2)
+contents' (AddAttribute _ _ _ c)     = contents' c
+contents' (AddCustomAttribute _ _ c) = contents' c
+contents' _                          = Empty
