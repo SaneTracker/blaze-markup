@@ -57,7 +57,9 @@ module Text.Blaze.Internal
 
       -- * Modifying Markup elements
     , contents
+    , contents'
     , external
+    , external'
     ) where
 
 import Control.Monad

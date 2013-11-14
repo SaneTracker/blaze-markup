@@ -12,6 +12,7 @@ module Text.Blaze.Renderer.Text
     , renderHtmlWith
     ) where
 
+import Control.Monad
 import Data.Functor.Identity
 import Data.Monoid (mappend, mempty)
 import Data.List (isInfixOf)
@@ -67,11 +68,11 @@ fromChoiceString _ EmptyChoiceString = mempty
 {-# INLINE fromChoiceString #-}
 
 -- | Render markup to a text builder
-renderMarkupBuilder :: Markup -> Builder
+renderMarkupBuilder :: Monad m => MarkupM m a -> m Builder
 renderMarkupBuilder = renderMarkupBuilderWith decodeUtf8
 {-# INLINE renderMarkupBuilder #-}
 
-renderHtmlBuilder :: Markup -> Builder
+renderHtmlBuilder :: Monad m => MarkupM m a -> m Builder
 renderHtmlBuilder = renderMarkupBuilder
 {-# INLINE renderHtmlBuilder #-}
 {-# DEPRECATED renderHtmlBuilder
@@ -79,10 +80,12 @@ renderHtmlBuilder = renderMarkupBuilder
 
 -- | Render some 'Markup' to a Text 'Builder'.
 --
-renderMarkupBuilderWith :: (ByteString -> Text) -- ^ Decoder for bytestrings
-                        -> Markup               -- ^ Markup to render
-                        -> Builder            -- ^ Resulting builder
-renderMarkupBuilderWith d = go mempty
+renderMarkupBuilderWith :: Monad m => (ByteString -> Text) -- ^ Decoder for bytestrings
+                        -> MarkupM m a                     -- ^ Markup to render
+                        -> m Builder                       -- ^ Resulting builder
+renderMarkupBuilderWith d (MarkupM m) = do
+    (_, mr) <- m
+    return $! go mempty mr
   where
     go :: Builder -> Markup -> Builder
     go attrs (Parent _ open close content) =
@@ -127,9 +130,9 @@ renderMarkupBuilderWith d = go mempty
     {-# NOINLINE go #-}
 {-# INLINE renderMarkupBuilderWith #-}
 
-renderHtmlBuilderWith :: (ByteString -> Text)  -- ^ Decoder for bytestrings
-                      -> Markup                -- ^ Markup to render
-                      -> Builder               -- ^ Resulting builder
+renderHtmlBuilderWith :: Monad m => (ByteString -> Text)  -- ^ Decoder for bytestrings
+                      -> MarkupM m a                      -- ^ Markup to render
+                      -> m Builder                          -- ^ Resulting builder
 renderHtmlBuilderWith = renderMarkupBuilderWith
 {-# INLINE renderHtmlBuilderWith #-}
 {-# DEPRECATED renderHtmlBuilderWith
@@ -156,9 +159,7 @@ renderHtml = renderMarkup
 renderMarkupWith :: Monad m => (ByteString -> Text)  -- ^ Decoder for ByteString's.
                  -> MarkupM m a                      -- ^ Markup to render
                  -> m L.Text                         -- Resulting lazy text
-renderMarkupWith d (MarkupM m) = do
-    (_, mr) <- m
-    return $ B.toLazyText $ renderMarkupBuilderWith d mr
+renderMarkupWith f = liftM B.toLazyText . renderMarkupBuilderWith f
 
 renderHtmlWith :: Monad m => (ByteString -> Text)  -- ^ Decoder for ByteString's.
                -> MarkupM m a                      -- ^ Markup to render

@@ -8,6 +8,7 @@ module Text.Blaze.Renderer.Utf8
     , renderHtmlToByteStringIO
     ) where
 
+import Control.Monad
 import Data.Monoid (mappend, mempty)
 import Data.List (isInfixOf)
 
@@ -45,9 +46,11 @@ fromChoiceString EmptyChoiceString = mempty
 
 -- | Render some 'Markup' to a 'Builder'.
 --
-renderMarkupBuilder, renderHtmlBuilder :: Markup     -- ^ Markup to render
-                  -> Builder  -- ^ Resulting builder
-renderMarkupBuilder = go mempty
+renderMarkupBuilder, renderHtmlBuilder :: Monad m => MarkupM m a -- ^ Markup to render
+                  -> m Builder  -- ^ Resulting builder
+renderMarkupBuilder (MarkupM m) = do
+    (_, mr) <- m
+    return $! go mempty mr
   where
     go :: Builder -> Markup -> Builder
     go attrs (Parent _ open close content) =
@@ -101,9 +104,7 @@ renderHtmlBuilder = renderMarkupBuilder
 --
 renderMarkup, renderHtml :: Monad m => MarkupM m a  -- ^ Markup to render
                          -> m L.ByteString          -- ^ Resulting 'L.ByteString'
-renderMarkup (MarkupM m) = do
-    (_, mr) <- m
-    return $ B.toLazyByteString $ renderMarkupBuilder mr
+renderMarkup = liftM B.toLazyByteString . renderMarkupBuilder
 {-# INLINE renderMarkup #-}
 
 renderHtml = renderMarkup
@@ -119,9 +120,7 @@ renderMarkupToByteStringIO, renderHtmlToByteStringIO :: (S.ByteString -> IO ())
                                                         -- ^ IO action to execute per rendered buffer
                                                      -> MarkupM IO a   -- ^ Markup to render
                                                      -> IO ()          -- ^ Resulting IO action
-renderMarkupToByteStringIO io (MarkupM m) = do
-    (_, mr) <- m
-    B.toByteStringIO io $ renderMarkupBuilder mr
+renderMarkupToByteStringIO io m = renderMarkupBuilder m >>= B.toByteStringIO io
 {-# INLINE renderMarkupToByteStringIO #-}
 
 renderHtmlToByteStringIO = renderMarkupToByteStringIO
