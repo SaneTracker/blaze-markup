@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, TypeSynonymInstances, Rank2Types, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances, TypeSynonymInstances, Rank2Types, MultiParamTypeClasses, FunctionalDependencies #-}
 -- | BlazeMarkup is a markup combinator library. It provides a way to embed
 -- markup languages like HTML and SVG in Haskell in an efficient and convenient
 -- way, with a light-weight syntax.
@@ -65,6 +65,7 @@ module Text.Blaze
     , contents
     ) where
 
+import Data.Functor.Identity
 import Data.Monoid
 
 import Data.Text (Text)
@@ -74,64 +75,64 @@ import Text.Blaze.Internal
 
 -- | Class allowing us to use a single function for Markup values
 --
-class ToMarkup m a where
+class ToMarkup a where
     -- | Convert a value to Markup.
     --
-    toMarkup :: a -> MarkupM m ()
+    toMarkup :: Monad m => a -> MarkupM m ()
 
     -- | Convert a value to Markup without escaping
     --
-    preEscapedToMarkup :: a -> MarkupM m ()
+    preEscapedToMarkup :: Monad m => a -> MarkupM m ()
     preEscapedToMarkup = toMarkup
     {-# INLINE preEscapedToMarkup #-}
 
-instance (Monad m) => ToMarkup m (MarkupM m ()) where
-    toMarkup = id
+instance ToMarkup (MarkupM Identity ()) where
+    toMarkup (MarkupM m) = MarkupM $ return $ runIdentity m
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m [MarkupM m ()] where
-    toMarkup = mconcat
+instance ToMarkup [MarkupM Identity ()] where
+    toMarkup = MarkupM . return . mconcat . map (\(MarkupM m) -> runIdentity m)
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Text where
+instance ToMarkup Text where
     toMarkup = text
     {-# INLINE toMarkup #-}
     preEscapedToMarkup = preEscapedText
     {-# INLINE preEscapedToMarkup #-}
 
-instance (Monad m) => ToMarkup m LT.Text where
+instance ToMarkup LT.Text where
     toMarkup = lazyText
     {-# INLINE toMarkup #-}
     preEscapedToMarkup = preEscapedLazyText
     {-# INLINE preEscapedToMarkup #-}
 
-instance (Monad m) => ToMarkup m String where
+instance ToMarkup String where
     toMarkup = string
     {-# INLINE toMarkup #-}
     preEscapedToMarkup = preEscapedString
     {-# INLINE preEscapedToMarkup #-}
 
-instance (Monad m) => ToMarkup m Int where
+instance ToMarkup Int where
     toMarkup = string . show
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Char where
+instance ToMarkup Char where
     toMarkup = string . return
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Bool where
+instance ToMarkup Bool where
     toMarkup = string . show
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Integer where
+instance ToMarkup Integer where
     toMarkup = string . show
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Float where
+instance ToMarkup Float where
     toMarkup = string . show
     {-# INLINE toMarkup #-}
 
-instance (Monad m) => ToMarkup m Double where
+instance ToMarkup Double where
     toMarkup = string . show
     {-# INLINE toMarkup #-}
 

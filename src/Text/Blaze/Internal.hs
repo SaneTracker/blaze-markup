@@ -198,8 +198,8 @@ instance (Monad m) => Monad (MarkupM m) where
         return (y, mappend ml mr)
     {-# INLINE (>>=) #-}
 
-instance (Monad m, Monoid a) => IsString (MarkupM m a) where
-    fromString s = MarkupM $ return (mempty, Content $ fromString s)
+instance (Monad m) => IsString (MarkupM m a) where
+    fromString s = MarkupM $ return (undefined, Content $ fromString s)
     {-# INLINE fromString #-}
 
 -- | Type for an HTML tag. This can be seen as an internal string type used by
